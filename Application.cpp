@@ -1,8 +1,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <queue>
-#include <list>
+#include <vector>
 #include <string>
+#include <cstring>
 #include <thread>
 #include <mutex>
 #include <chrono>
@@ -17,16 +18,16 @@ const unsigned int QoS = 1;
 std::mutex queueMutex;
 
 void readMessages(std::queue<std::string>&);
-void createPublishers(std::list<mqtt::async_client_ptr>&, const std::string);
-void connectPublishers(std::list<mqtt::async_client_ptr>&, const mqtt::connect_options&);
-void createThreads(std::list<mqtt::async_client_ptr>&, std::queue<std::string>&);
+void createPublishers(std::vector<mqtt::async_client_ptr>&, const std::string);
+void connectPublishers(std::vector<mqtt::async_client_ptr>&, const mqtt::connect_options&);
+void createThreads(std::vector<mqtt::async_client_ptr>&, std::queue<std::string>&);
 void publishMessages(mqtt::async_client_ptr, std::queue<std::string>&);
-void disconnectPublishers (std::list<mqtt::async_client_ptr>&);
+void disconnectPublishers (std::vector<mqtt::async_client_ptr>&);
 
 int main(int argc, char *argv[])
 {
     /*  read all the messages from the user */    
-    std::queue<std::string> messages;
+    std::queue<std::string> messages;  
     readMessages(messages);
 
     /*  initialization of the server and establishing the connection's options */ 
@@ -44,8 +45,8 @@ int main(int argc, char *argv[])
     try{
        
        /* creating the publishers and connecting each of them to the server */
-       std::list<mqtt::async_client_ptr> publishers;
-       std::list<std::thread> threads;
+       std::vector<mqtt::async_client_ptr> publishers;
+       std::vector<std::thread> threads;
        createPublishers(publishers, address);
        connectPublishers(publishers, connectOpts);
 
@@ -95,23 +96,28 @@ int main(int argc, char *argv[])
 void readMessages(std::queue<std::string>& messages)
 {
     std::string tmpMessage;
-    while ( std::cin >> tmpMessage ){
-        messages.push(std::move(tmpMessage));
+    bool isFinished = false;
+    while (getline(std::cin, tmpMessage) && !isFinished){
+        if(tmpMessage.empty()){
+            isFinished = true;
+        }
+        else{
+            messages.push(tmpMessage);
+        }
     }
     return;
 }
 
-void createPublishers(std::list<mqtt::async_client_ptr>& publishers, const std::string address)
+void createPublishers(std::vector<mqtt::async_client_ptr>& publishers, const std::string address)
 {
     for (unsigned int it = 0; it < NUMBER_OF_PUBLISHERS; it++){
         mqtt::async_client_ptr client = std::make_shared<mqtt::async_client>(address, std::to_string(it+1));
-        //mqtt::async_client tmpPublisher(address, std::to_string(it+1));
         publishers.push_back(std::move(client));
     }
     return;
 }
 
-void connectPublishers(std::list<mqtt::async_client_ptr>& publishers, const mqtt::connect_options& connectOpts)
+void connectPublishers(std::vector<mqtt::async_client_ptr>& publishers, const mqtt::connect_options& connectOpts)
 {
     for(auto &currentPublisher:publishers){
         mqtt::token_ptr connectionToken = currentPublisher->connect(connectOpts);
@@ -120,38 +126,43 @@ void connectPublishers(std::list<mqtt::async_client_ptr>& publishers, const mqtt
     return;
 }
 
-void createThreads(std::list<mqtt::async_client_ptr>& publishers, std::queue<std::string>& messages)
+void createThreads(std::vector<mqtt::async_client_ptr>& publishers, std::queue<std::string>& messages)
 {
-    std::list<std::thread> threads;
-    for (auto &currentPublisher:publishers){
-        std::thread newThread(publishMessages, currentPublisher, std::ref(messages));
-        threads.push_back(std::move(newThread));
-    }
-
+    std::vector<std::thread> threads;
+    std::thread t1(publishMessages, publishers.at(0), std::ref(messages));
+    threads.push_back(std::move(t1));
+    
+    std::thread t2(publishMessages, publishers.at(1), std::ref(messages));
+    threads.push_back(std::move(t2));
+    
+    std::thread t3(publishMessages, publishers.at(2), std::ref(messages));
+    threads.push_back(std::move(t3));
+    
     for (auto &currentThread:threads){
-        currentThread.join();
+        currentThread.join(); /* all the created threads are joined back to the main thread */
     }
     std::cout << "All messages are published to the topic" << std::endl;
     return;
 }
 
 void publishMessages(mqtt::async_client_ptr currentPublisher, std::queue<std::string>& messages)
-{
-    std::lock_guard<std::mutex> lck(queueMutex);
+{   
     while (!messages.empty()){
+        queueMutex.lock(); /* synchronization of publishers */
         mqtt::message_ptr currentMessage = mqtt::make_message(TOPIC, messages.front());
-        messages.pop();
+        messages.pop(); 
         currentMessage->set_qos(QoS);
         currentPublisher->publish(currentMessage)->wait();
         std::cout << "Publisher " << currentPublisher->get_client_id()
                   << " Published " << currentMessage->get_payload_str()
                   << " to the Topic " << currentMessage->get_topic()
                   << std::endl;          
+        queueMutex.unlock();   
     }
     return;
 }
 
-void disconnectPublishers (std::list<mqtt::async_client_ptr>& publishers)
+void disconnectPublishers (std::vector<mqtt::async_client_ptr>& publishers)
 {
     for(auto &currentPublisher:publishers){
         mqtt::token_ptr disconnectionToken = currentPublisher->disconnect();
